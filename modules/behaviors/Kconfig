@@ -1,0 +1,17 @@
+menuconfig ZMK_TRACKBALL_PROFILES
+	bool "Layer-based trackball acceleration profiles"
+	default y if PMW3610
+	depends on ZMK_MOUSE
+	help
+	  Automatically switch trackball DPI and acceleration curves
+	  based on the active ZMK layer. Profiles are defined in the
+	  keymap devicetree with a list of layers each profile applies to.
+
+if ZMK_TRACKBALL_PROFILES
+
+config ZMK_TRACKBALL_MAX_PROFILES
+	int "Maximum number of trackball profiles"
+	default 8
+	range 1 16
+
+endif # ZMK_TRACKBALL_PROFILES
