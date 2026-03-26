@@ -1,7 +1,8 @@
 menuconfig ZMK_TRACKBALL_PROFILES
 	bool "Layer-based trackball acceleration profiles"
 	default y if PMW3610
-	depends on ZMK_MOUSE
+	depends on PMW3610
+	depends on !ZMK_SPLIT || ZMK_SPLIT_ROLE_CENTRAL
 	help
 	  Automatically switch trackball DPI and acceleration curves
 	  based on the active ZMK layer. Profiles are defined in the
