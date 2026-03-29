@@ -1,18 +1,14 @@
-menuconfig ZMK_TRACKBALL_PROFILES
-	bool "Layer-based trackball acceleration profiles"
-	default y if PMW3610
+config ZMK_INPUT_PROCESSOR_ACCEL
+	bool "Acceleration power curve input processor"
+	default y if DT_HAS_ZMK_INPUT_PROCESSOR_ACCEL_ENABLED
+	help
+	  Applies d^(exponent/100) power curve acceleration to pointer input.
+
+config ZMK_TRACKBALL_DPI_PROFILES
+	bool "Layer-based trackball DPI switching"
+	default y if DT_HAS_ZMK_TRACKBALL_DPI_PROFILES_ENABLED
 	depends on PMW3610
 	depends on !ZMK_SPLIT || ZMK_SPLIT_ROLE_CENTRAL
 	help
-	  Automatically switch trackball DPI and acceleration curves
-	  based on the active ZMK layer. Profiles are defined in the
-	  keymap devicetree with a list of layers each profile applies to.
-
-if ZMK_TRACKBALL_PROFILES
-
-config ZMK_TRACKBALL_MAX_PROFILES
-	int "Maximum number of trackball profiles"
-	default 8
-	range 1 16
-
-endif # ZMK_TRACKBALL_PROFILES
+	  Automatically switch trackball hardware CPI based on the
+	  active ZMK layer.
