@@ -23,26 +23,12 @@ child-binding:
       required: true
       description: Sensor CPI (200-3200, multiple of 200).
 
-    acceleration-multiplier:
-      type: int
-      required: true
-      description: |
-        Base speed multiplier, fixed-point x100.
-        100 = 1.0x, 150 = 1.5x, 80 = 0.8x.
-
-    acceleration-threshold:
-      type: int
-      required: true
-      description: |
-        Delta magnitude (sensor counts per sample) below which
-        acceleration is not applied — just the base multiplier.
-
     acceleration-exponent:
       type: int
       required: true
       description: |
-        Acceleration curve selector, fixed-point x100.
-        0       = linear (no acceleration curve)
-        1-40    = gentle  (d^1.3 lookup table)
-        41-65   = medium  (d^1.5 lookup table)
-        66-100  = strong  (d^2.0 lookup table)
+        Power curve exponent, fixed-point x100.
+        100 = linear (no acceleration)
+        120 = smooth, mild (MX Ergo-like)
+        140 = moderate
+        200 = aggressive

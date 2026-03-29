@@ -9,18 +9,9 @@
  *   trackball_profiles {
  *       compatible = "zmk,trackball-profiles";
  *       profile_default {
- *           layers = <0 1 2>;        // DEFAULT, LOWER, RAISE
- *           dpi = <800>;
- *           acceleration-multiplier = <100>;
- *           acceleration-threshold = <5>;
- *           acceleration-exponent = <50>;
- *       };
- *       profile_gaming {
- *           layers = <3>;            // GAMEPAD
- *           dpi = <1600>;
- *           acceleration-multiplier = <150>;
- *           acceleration-threshold = <3>;
- *           acceleration-exponent = <80>;
+ *           layers = <0 1 2>;
+ *           dpi = <600>;
+ *           acceleration-exponent = <120>;  // d^1.2 power curve
  *       };
  *   };
  *
@@ -44,8 +35,6 @@ LOG_MODULE_REGISTER(trackball_profiles, CONFIG_ZMK_LOG_LEVEL);
 
 struct tb_profile {
 	uint16_t dpi;
-	uint16_t multiplier;
-	uint16_t threshold;
 	uint16_t exponent;
 	const uint32_t *layers;
 	uint8_t layer_count;
@@ -63,11 +52,9 @@ DT_FOREACH_CHILD(TB_PROFILES_NODE, PROFILE_LAYERS)
 
 #define PROFILE_ENTRY(node)                                            \
 	{                                                              \
-		.dpi        = DT_PROP(node, dpi),                      \
-		.multiplier = DT_PROP(node, acceleration_multiplier),  \
-		.threshold  = DT_PROP(node, acceleration_threshold),   \
-		.exponent   = DT_PROP(node, acceleration_exponent),    \
-		.layers     = profile_layers_##node,                   \
+		.dpi         = DT_PROP(node, dpi),                     \
+		.exponent    = DT_PROP(node, acceleration_exponent),   \
+		.layers      = profile_layers_##node,                  \
 		.layer_count = DT_PROP_LEN(node, layers),              \
 	},
 
@@ -80,7 +67,7 @@ static const struct tb_profile profiles[] = {
 
 static const uint32_t default_layers[] = { 0 };
 static const struct tb_profile profiles[] = {
-	{ .dpi = 800, .multiplier = 100, .threshold = 5, .exponent = 50,
+	{ .dpi = 600, .exponent = 120,
 	  .layers = default_layers, .layer_count = 1 },
 };
 #define NUM_PROFILES 1
@@ -101,13 +88,10 @@ static void apply_profile(int idx)
 	active_profile_idx = idx;
 
 	pmw3610_set_cpi(trackball_dev, p->dpi);
-	pmw3610_set_acceleration(trackball_dev,
-				 p->multiplier,
-				 p->threshold,
-				 p->exponent);
+	pmw3610_set_acceleration(trackball_dev, p->exponent);
 
-	LOG_INF("Trackball profile %d: DPI=%u mul=%u thr=%u exp=%u",
-		idx, p->dpi, p->multiplier, p->threshold, p->exponent);
+	LOG_INF("Trackball profile %d: DPI=%u exp=%u",
+		idx, p->dpi, p->exponent);
 }
 
 /* Find profile matching the highest active layer */
