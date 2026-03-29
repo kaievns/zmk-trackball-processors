@@ -1,0 +1,15 @@
+# EMA smoothing input processor
+#
+# param1 = smoothing level (0-10)
+#   0 = off, 2 = light, 4 = moderate, 6 = heavy, 10 = maximum
+#
+# Usage:
+#   input-processors = <&zip_smooth 3>;
+
+description: Input processor that applies EMA smoothing to pointer motion.
+
+compatible: "zmk,input-processor-smooth"
+
+include: ip_one_param.yaml
+
+properties: {}

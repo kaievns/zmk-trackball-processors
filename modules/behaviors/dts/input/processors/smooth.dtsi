@@ -1,0 +1,6 @@
+/ {
+    /omit-if-no-ref/ zip_smooth: zip_smooth {
+        compatible = "zmk,input-processor-smooth";
+        #input-processor-cells = <1>;
+    };
+};

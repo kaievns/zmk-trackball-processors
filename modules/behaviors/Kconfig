@@ -4,6 +4,12 @@ config ZMK_INPUT_PROCESSOR_ACCEL
 	help
 	  Applies d^(exponent/100) power curve acceleration to pointer input.
 
+config ZMK_INPUT_PROCESSOR_SMOOTH
+	bool "EMA smoothing input processor"
+	default y if DT_HAS_ZMK_INPUT_PROCESSOR_SMOOTH_ENABLED
+	help
+	  Applies exponential moving average smoothing to pointer input.
+
 config ZMK_TRACKBALL_DPI_PROFILES
 	bool "Layer-based trackball DPI switching"
 	default y if DT_HAS_ZMK_TRACKBALL_DPI_PROFILES_ENABLED
