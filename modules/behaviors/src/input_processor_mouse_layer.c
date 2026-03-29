@@ -1,0 +1,344 @@
+/*
+ * Mouse layer input processor
+ *
+ * Temporarily activates a configurable layer when the trackball moves,
+ * with smart handling of clicks, double-clicks, and drag operations.
+ *
+ * State machine:
+ *   IDLE         → trackball move → ACTIVE (layer on, idle timer starts)
+ *   ACTIVE       → idle timeout   → IDLE (layer off)
+ *                → button press   → BUTTON_DOWN
+ *                → trackball move → reset idle timer
+ *   BUTTON_DOWN  → trackball move → DRAGGING
+ *                → button release → CLICK_LINGER (DC timer)
+ *   DRAGGING     → button release → ACTIVE (idle timer)
+ *   CLICK_LINGER → DC timeout     → IDLE (layer off)
+ *                → button press   → BUTTON_DOWN (set pending_deactivate)
+ *                → trackball move → ACTIVE (cancel DC, idle timer)
+ *
+ * After a double-click completes (second release in CLICK_LINGER path),
+ * the layer deactivates immediately.
+ *
+ * Mouse buttons are detected via zmk_position_state_changed for key
+ * positions listed in the `button-positions` devicetree property.
+ *
+ * Uses zmk_keymap_layer_activate/deactivate so the layer is overlaid
+ * on whatever was active — deactivation returns to the prior state.
+ *
+ * param1 = target layer
+ * param2 = idle timeout (ms)
+ */
+
+#define DT_DRV_COMPAT zmk_input_processor_mouse_layer
+
+#include <zephyr/kernel.h>
+#include <zephyr/device.h>
+#include <zephyr/input/input.h>
+#include <drivers/input_processor.h>
+#include <zmk/keymap.h>
+#include <zmk/events/position_state_changed.h>
+#include <zmk/events/keycode_state_changed.h>
+
+#include <zephyr/logging/log.h>
+LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+
+enum ml_state {
+	ML_IDLE,
+	ML_ACTIVE,
+	ML_BUTTON_DOWN,
+	ML_DRAGGING,
+	ML_CLICK_LINGER,
+};
+
+struct ml_config {
+	int16_t require_prior_idle_ms;
+	int16_t double_click_window_ms;
+	uint32_t active_layer_mask; /* 0 = any layer */
+	const uint16_t *button_positions;
+	size_t num_button_positions;
+};
+
+struct ml_data {
+	const struct device *dev;
+	enum ml_state state;
+	uint8_t target_layer;
+	uint32_t idle_timeout_ms;
+	int64_t last_keycode_ts;
+	uint8_t buttons_held;
+	bool pending_deactivate; /* deactivate on next full release */
+	struct k_work_delayable timer_work;
+};
+
+/* ── helpers ─────────────────────────────────────────────────────── */
+
+static bool is_button_position(const struct ml_config *cfg, uint32_t position)
+{
+	for (size_t i = 0; i < cfg->num_button_positions; i++) {
+		if (cfg->button_positions[i] == position) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void activate_layer(struct ml_data *data)
+{
+	zmk_keymap_layer_activate(data->target_layer);
+	LOG_DBG("mouse_layer: layer %d ON", data->target_layer);
+}
+
+static void deactivate_layer(struct ml_data *data)
+{
+	zmk_keymap_layer_deactivate(data->target_layer);
+	data->state = ML_IDLE;
+	data->pending_deactivate = false;
+	LOG_DBG("mouse_layer: layer %d OFF", data->target_layer);
+}
+
+/* ── timer callback (runs in system workqueue) ───────────────────── */
+
+static void timer_cb(struct k_work *work)
+{
+	struct k_work_delayable *dw = k_work_delayable_from_work(work);
+	struct ml_data *data = CONTAINER_OF(dw, struct ml_data, timer_work);
+
+	switch (data->state) {
+	case ML_ACTIVE:
+		/* idle timeout */
+		deactivate_layer(data);
+		break;
+	case ML_CLICK_LINGER:
+		/* double-click window expired without second click */
+		deactivate_layer(data);
+		break;
+	default:
+		break;
+	}
+}
+
+/* ── input processor handle_event (trackball motion) ─────────────── */
+
+static int ml_handle_event(const struct device *dev, struct input_event *event,
+			   uint32_t param1, uint32_t param2,
+			   struct zmk_input_processor_state *state)
+{
+	struct ml_data *data = dev->data;
+	const struct ml_config *cfg = dev->config;
+
+	if (event->type != INPUT_EV_REL) {
+		return 0;
+	}
+
+	data->target_layer = (uint8_t)param1;
+	data->idle_timeout_ms = param2;
+
+	switch (data->state) {
+	case ML_IDLE:
+		if (cfg->active_layer_mask &&
+		    !(cfg->active_layer_mask & BIT(zmk_keymap_highest_layer_active()))) {
+			return 0;
+		}
+		if (cfg->require_prior_idle_ms > 0) {
+			int64_t now = k_uptime_get();
+			if ((data->last_keycode_ts + cfg->require_prior_idle_ms) > now) {
+				return 0;
+			}
+		}
+		activate_layer(data);
+		data->state = ML_ACTIVE;
+		k_work_reschedule(&data->timer_work, K_MSEC(data->idle_timeout_ms));
+		break;
+
+	case ML_ACTIVE:
+		k_work_reschedule(&data->timer_work, K_MSEC(data->idle_timeout_ms));
+		break;
+
+	case ML_BUTTON_DOWN:
+		data->state = ML_DRAGGING;
+		LOG_DBG("mouse_layer: → DRAGGING");
+		break;
+
+	case ML_DRAGGING:
+		/* stay dragging */
+		break;
+
+	case ML_CLICK_LINGER:
+		/* movement cancels DC wait, back to normal active */
+		k_work_cancel_delayable(&data->timer_work);
+		data->state = ML_ACTIVE;
+		data->pending_deactivate = false;
+		k_work_reschedule(&data->timer_work, K_MSEC(data->idle_timeout_ms));
+		LOG_DBG("mouse_layer: move during DC → ACTIVE");
+		break;
+	}
+
+	return 0;
+}
+
+/* ── ZMK event: position state (mouse button press/release) ──────── */
+
+static int on_position_state(const zmk_event_t *eh)
+{
+	const struct zmk_position_state_changed *ev =
+		as_zmk_position_state_changed(eh);
+	if (!ev) {
+		return ZMK_EV_EVENT_BUBBLE;
+	}
+
+	const struct device *dev = DEVICE_DT_INST_GET(0);
+	struct ml_data *data = dev->data;
+	const struct ml_config *cfg = dev->config;
+
+	if (!is_button_position(cfg, ev->position)) {
+		return ZMK_EV_EVENT_BUBBLE;
+	}
+
+	if (ev->state) {
+		/* ── button pressed ── */
+		data->buttons_held++;
+
+		switch (data->state) {
+		case ML_ACTIVE:
+			k_work_cancel_delayable(&data->timer_work);
+			data->state = ML_BUTTON_DOWN;
+			data->pending_deactivate = false;
+			LOG_DBG("mouse_layer: btn press (pos %d) → BUTTON_DOWN",
+				ev->position);
+			break;
+		case ML_CLICK_LINGER:
+			k_work_cancel_delayable(&data->timer_work);
+			data->state = ML_BUTTON_DOWN;
+			data->pending_deactivate = true;
+			LOG_DBG("mouse_layer: btn press in DC → BUTTON_DOWN (pending deact)");
+			break;
+		default:
+			break;
+		}
+	} else {
+		/* ── button released ── */
+		if (data->buttons_held > 0) {
+			data->buttons_held--;
+		}
+
+		/* only act when all buttons are released */
+		if (data->buttons_held > 0) {
+			return ZMK_EV_EVENT_BUBBLE;
+		}
+
+		switch (data->state) {
+		case ML_BUTTON_DOWN:
+			if (data->pending_deactivate) {
+				/* second click completed → deactivate */
+				deactivate_layer(data);
+				LOG_DBG("mouse_layer: double-click done → IDLE");
+			} else {
+				/* first click → linger for DC window */
+				data->state = ML_CLICK_LINGER;
+				k_work_reschedule(&data->timer_work,
+						  K_MSEC(cfg->double_click_window_ms));
+				LOG_DBG("mouse_layer: click → CLICK_LINGER (%dms)",
+					cfg->double_click_window_ms);
+			}
+			break;
+		case ML_DRAGGING:
+			if (data->pending_deactivate) {
+				deactivate_layer(data);
+				LOG_DBG("mouse_layer: DC drag end → IDLE");
+			} else {
+				data->state = ML_ACTIVE;
+				k_work_reschedule(&data->timer_work,
+						  K_MSEC(data->idle_timeout_ms));
+				LOG_DBG("mouse_layer: drag end → ACTIVE");
+			}
+			break;
+		default:
+			break;
+		}
+	}
+
+	return ZMK_EV_EVENT_BUBBLE;
+}
+
+/* ── ZMK event: keycode (for require-prior-idle tracking) ─────────── */
+
+static int on_keycode(const zmk_event_t *eh)
+{
+	const struct zmk_keycode_state_changed *ev =
+		as_zmk_keycode_state_changed(eh);
+	if (!ev || !ev->state) {
+		return ZMK_EV_EVENT_BUBBLE;
+	}
+
+	const struct device *dev = DEVICE_DT_INST_GET(0);
+	struct ml_data *data = dev->data;
+	data->last_keycode_ts = ev->timestamp;
+
+	return ZMK_EV_EVENT_BUBBLE;
+}
+
+/* ── event dispatcher ─────────────────────────────────────────────── */
+
+static int ml_event_dispatcher(const zmk_event_t *eh)
+{
+	if (as_zmk_position_state_changed(eh)) {
+		return on_position_state(eh);
+	}
+	if (as_zmk_keycode_state_changed(eh)) {
+		return on_keycode(eh);
+	}
+	return ZMK_EV_EVENT_BUBBLE;
+}
+
+/* ── init ─────────────────────────────────────────────────────────── */
+
+static int ml_init(const struct device *dev)
+{
+	struct ml_data *data = dev->data;
+	data->dev = dev;
+	k_work_init_delayable(&data->timer_work, timer_cb);
+	return 0;
+}
+
+/* ── driver API ───────────────────────────────────────────────────── */
+
+static const struct zmk_input_processor_driver_api ml_api = {
+	.handle_event = ml_handle_event,
+};
+
+/* ── ZMK event subscriptions ─────────────────────────────────────── */
+
+ZMK_LISTENER(processor_mouse_layer, ml_event_dispatcher);
+ZMK_SUBSCRIPTION(processor_mouse_layer, zmk_position_state_changed);
+ZMK_SUBSCRIPTION(processor_mouse_layer, zmk_keycode_state_changed);
+
+/* ── device instantiation ─────────────────────────────────────────── */
+
+#define ML_ACTIVE_LAYER_BIT(node, prop, idx) BIT(DT_PROP_BY_IDX(node, prop, idx))
+
+#define ML_ACTIVE_LAYER_MASK(n)                                             \
+	COND_CODE_1(DT_INST_NODE_HAS_PROP(n, active_layers),               \
+		(DT_INST_FOREACH_PROP_ELEM_SEP(n, active_layers,            \
+			ML_ACTIVE_LAYER_BIT, (|))),                         \
+		(0))
+
+#define ML_INST(n)                                                          \
+	static struct ml_data ml_data_##n = {};                             \
+	static const uint16_t ml_button_positions_##n[] =                   \
+		DT_INST_PROP(n, button_positions);                          \
+	static const struct ml_config ml_config_##n = {                     \
+		.require_prior_idle_ms =                                    \
+			DT_INST_PROP_OR(n, require_prior_idle_ms, 0),       \
+		.double_click_window_ms =                                   \
+			DT_INST_PROP_OR(n, double_click_window_ms, 300),    \
+		.active_layer_mask = ML_ACTIVE_LAYER_MASK(n),               \
+		.button_positions = ml_button_positions_##n,                \
+		.num_button_positions =                                     \
+			DT_INST_PROP_LEN(n, button_positions),              \
+	};                                                                  \
+	DEVICE_DT_INST_DEFINE(n, ml_init, NULL,                             \
+			      &ml_data_##n, &ml_config_##n,                 \
+			      POST_KERNEL,                                  \
+			      CONFIG_KERNEL_INIT_PRIORITY_DEFAULT,          \
+			      &ml_api);
+
+DT_INST_FOREACH_STATUS_OKAY(ML_INST)

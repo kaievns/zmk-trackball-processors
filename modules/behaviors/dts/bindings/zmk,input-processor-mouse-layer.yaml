@@ -1,0 +1,54 @@
+# Mouse layer input processor
+#
+# Activates a layer on trackball movement with smart click/drag/double-click
+# handling. Deactivates after idle timeout or double-click completion.
+#
+# param1 = target layer
+# param2 = idle timeout (ms)
+#
+# Usage:
+#   input-processors = <&zip_mouse_layer 8 500>;
+
+description: Input processor that temporarily activates a mouse layer with click-aware lifecycle.
+
+compatible: "zmk,input-processor-mouse-layer"
+
+include: ip_two_param.yaml
+
+properties:
+  require-prior-idle-ms:
+    type: int
+    required: false
+    default: 0
+    description: >
+      Minimum milliseconds since last keystroke before trackball
+      movement can activate the layer. Prevents accidental activation
+      while typing.
+
+  double-click-window-ms:
+    type: int
+    required: false
+    default: 300
+    description: >
+      After a mouse click, the layer lingers for this many milliseconds
+      to allow a double-click. A second click within this window completes
+      the double-click and then deactivates the layer.
+
+  active-layers:
+    type: array
+    required: false
+    default: []
+    description: >
+      Layer indices where the processor is allowed to activate. If
+      empty (default), the processor activates from any layer. If
+      set, trackball movement only triggers the mouse layer when one
+      of the listed layers is currently the highest active layer.
+
+  button-positions:
+    type: array
+    required: false
+    default: []
+    description: >
+      Key positions that are treated as mouse buttons. Pressing these
+      positions triggers drag-hold and double-click logic. Typically
+      the positions where mkp bindings live on the target layer.
