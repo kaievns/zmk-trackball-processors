@@ -91,6 +91,7 @@ static void deactivate_layer(struct ml_data *data)
 {
 	zmk_keymap_layer_deactivate(data->target_layer);
 	data->state = ML_IDLE;
+	data->buttons_held = 0;
 	data->pending_deactivate = false;
 	LOG_DBG("mouse_layer: layer %d OFF", data->target_layer);
 }
@@ -195,10 +196,9 @@ static int on_position_state(const zmk_event_t *eh)
 
 	if (ev->state) {
 		/* ── button pressed ── */
-		data->buttons_held++;
-
 		switch (data->state) {
 		case ML_ACTIVE:
+			data->buttons_held++;
 			k_work_cancel_delayable(&data->timer_work);
 			data->state = ML_BUTTON_DOWN;
 			data->pending_deactivate = false;
@@ -206,6 +206,7 @@ static int on_position_state(const zmk_event_t *eh)
 				ev->position);
 			break;
 		case ML_CLICK_LINGER:
+			data->buttons_held++;
 			k_work_cancel_delayable(&data->timer_work);
 			data->state = ML_BUTTON_DOWN;
 			data->pending_deactivate = true;
