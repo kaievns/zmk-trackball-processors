@@ -1,0 +1,6 @@
+/ {
+    /omit-if-no-ref/ zip_deflicker: zip_deflicker {
+        compatible = "zmk,input-processor-deflicker";
+        #input-processor-cells = <1>;
+    };
+};
