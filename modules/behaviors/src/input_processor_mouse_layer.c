@@ -11,7 +11,9 @@
  *                → trackball move → reset idle timer
  *   BUTTON_DOWN  → trackball move → DRAGGING
  *                → button release → CLICK_LINGER (DC timer)
+ *                → safety timeout → ACTIVE (idle timer, buttons reset)
  *   DRAGGING     → button release → ACTIVE (idle timer)
+ *                → safety timeout → ACTIVE (idle timer, buttons reset)
  *   CLICK_LINGER → DC timeout     → IDLE (layer off)
  *                → button press   → BUTTON_DOWN (set pending_deactivate)
  *                → trackball move → ACTIVE (cancel DC, idle timer)
@@ -37,10 +39,14 @@
 #include <drivers/input_processor.h>
 #include <zmk/keymap.h>
 #include <zmk/events/position_state_changed.h>
-#include <zmk/events/keycode_state_changed.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+
+/* Safety timeout for BUTTON_DOWN/DRAGGING — if a button release is
+ * missed (e.g. BLE packet loss on split keyboard), the state machine
+ * recovers rather than staying stuck forever. */
+#define SAFETY_TIMEOUT_MS 10000
 
 enum ml_state {
 	ML_IDLE,
@@ -63,7 +69,7 @@ struct ml_data {
 	enum ml_state state;
 	uint8_t target_layer;
 	uint32_t idle_timeout_ms;
-	int64_t last_keycode_ts;
+	int64_t last_typing_ts;
 	uint8_t buttons_held;
 	bool pending_deactivate; /* deactivate on next full release */
 	struct k_work_delayable timer_work;
@@ -112,6 +118,18 @@ static void timer_cb(struct k_work *work)
 		/* double-click window expired without second click */
 		deactivate_layer(data);
 		break;
+	case ML_BUTTON_DOWN:
+	case ML_DRAGGING:
+		/* Safety timeout — missed button release. Reset to ACTIVE
+		 * and let the normal idle timer handle deactivation. */
+		LOG_WRN("mouse_layer: safety timeout in %s, recovering",
+			data->state == ML_BUTTON_DOWN ? "BUTTON_DOWN" : "DRAGGING");
+		data->buttons_held = 0;
+		data->pending_deactivate = false;
+		data->state = ML_ACTIVE;
+		k_work_reschedule(&data->timer_work,
+				  K_MSEC(data->idle_timeout_ms));
+		break;
 	default:
 		break;
 	}
@@ -141,7 +159,7 @@ static int ml_handle_event(const struct device *dev, struct input_event *event,
 		}
 		if (cfg->require_prior_idle_ms > 0) {
 			int64_t now = k_uptime_get();
-			if ((data->last_keycode_ts + cfg->require_prior_idle_ms) > now) {
+			if ((data->last_typing_ts + cfg->require_prior_idle_ms) > now) {
 				return 0;
 			}
 		}
@@ -151,6 +169,10 @@ static int ml_handle_event(const struct device *dev, struct input_event *event,
 		break;
 
 	case ML_ACTIVE:
+		/* Re-activate if layer was externally deactivated */
+		if (!zmk_keymap_layer_active(data->target_layer)) {
+			activate_layer(data);
+		}
 		k_work_reschedule(&data->timer_work, K_MSEC(data->idle_timeout_ms));
 		break;
 
@@ -176,7 +198,7 @@ static int ml_handle_event(const struct device *dev, struct input_event *event,
 	return 0;
 }
 
-/* ── ZMK event: position state (mouse button press/release) ──────── */
+/* ── ZMK event: position state (button tracking + typing idle) ────── */
 
 static int on_position_state(const zmk_event_t *eh)
 {
@@ -190,89 +212,93 @@ static int on_position_state(const zmk_event_t *eh)
 	struct ml_data *data = dev->data;
 	const struct ml_config *cfg = dev->config;
 
-	if (!is_button_position(cfg, ev->position)) {
-		return ZMK_EV_EVENT_BUBBLE;
-	}
-
-	if (ev->state) {
-		/* ── button pressed ── */
-		switch (data->state) {
-		case ML_ACTIVE:
-			data->buttons_held++;
-			k_work_cancel_delayable(&data->timer_work);
-			data->state = ML_BUTTON_DOWN;
-			data->pending_deactivate = false;
-			LOG_DBG("mouse_layer: btn press (pos %d) → BUTTON_DOWN",
-				ev->position);
-			break;
-		case ML_CLICK_LINGER:
-			data->buttons_held++;
-			k_work_cancel_delayable(&data->timer_work);
-			data->state = ML_BUTTON_DOWN;
-			data->pending_deactivate = true;
-			LOG_DBG("mouse_layer: btn press in DC → BUTTON_DOWN (pending deact)");
-			break;
-		default:
-			break;
-		}
-	} else {
-		/* ── button released ── */
-		if (data->buttons_held > 0) {
-			data->buttons_held--;
-		}
-
-		/* only act when all buttons are released */
-		if (data->buttons_held > 0) {
-			return ZMK_EV_EVENT_BUBBLE;
-		}
-
-		switch (data->state) {
-		case ML_BUTTON_DOWN:
-			if (data->pending_deactivate) {
-				/* second click completed → deactivate */
-				deactivate_layer(data);
-				LOG_DBG("mouse_layer: double-click done → IDLE");
-			} else {
-				/* first click → linger for DC window */
-				data->state = ML_CLICK_LINGER;
+	if (is_button_position(cfg, ev->position)) {
+		/* ── mouse button press/release ── */
+		if (ev->state) {
+			switch (data->state) {
+			case ML_ACTIVE:
+				data->buttons_held++;
+				k_work_cancel_delayable(&data->timer_work);
+				data->state = ML_BUTTON_DOWN;
+				data->pending_deactivate = false;
 				k_work_reschedule(&data->timer_work,
-						  K_MSEC(cfg->double_click_window_ms));
-				LOG_DBG("mouse_layer: click → CLICK_LINGER (%dms)",
-					cfg->double_click_window_ms);
-			}
-			break;
-		case ML_DRAGGING:
-			if (data->pending_deactivate) {
-				deactivate_layer(data);
-				LOG_DBG("mouse_layer: DC drag end → IDLE");
-			} else {
-				data->state = ML_ACTIVE;
+						  K_MSEC(SAFETY_TIMEOUT_MS));
+				LOG_DBG("mouse_layer: btn press (pos %d) → BUTTON_DOWN",
+					ev->position);
+				break;
+			case ML_CLICK_LINGER:
+				data->buttons_held++;
+				k_work_cancel_delayable(&data->timer_work);
+				data->state = ML_BUTTON_DOWN;
+				data->pending_deactivate = true;
 				k_work_reschedule(&data->timer_work,
-						  K_MSEC(data->idle_timeout_ms));
-				LOG_DBG("mouse_layer: drag end → ACTIVE");
+						  K_MSEC(SAFETY_TIMEOUT_MS));
+				LOG_DBG("mouse_layer: btn press in DC → BUTTON_DOWN (pending deact)");
+				break;
+			case ML_BUTTON_DOWN:
+			case ML_DRAGGING:
+				/* Additional button during click/drag */
+				data->buttons_held++;
+				break;
+			default:
+				break;
 			}
-			break;
-		default:
-			break;
+		} else {
+			/* ── button released ── */
+			if (data->buttons_held > 0) {
+				data->buttons_held--;
+			}
+
+			/* only act when all buttons are released */
+			if (data->buttons_held > 0) {
+				return ZMK_EV_EVENT_BUBBLE;
+			}
+
+			switch (data->state) {
+			case ML_BUTTON_DOWN:
+				if (data->pending_deactivate) {
+					/* second click completed → deactivate */
+					deactivate_layer(data);
+					LOG_DBG("mouse_layer: double-click done → IDLE");
+				} else {
+					/* first click → linger for DC window */
+					data->state = ML_CLICK_LINGER;
+					k_work_reschedule(&data->timer_work,
+							  K_MSEC(cfg->double_click_window_ms));
+					LOG_DBG("mouse_layer: click → CLICK_LINGER (%dms)",
+						cfg->double_click_window_ms);
+				}
+				break;
+			case ML_DRAGGING:
+				if (data->pending_deactivate) {
+					deactivate_layer(data);
+					LOG_DBG("mouse_layer: DC drag end → IDLE");
+				} else {
+					data->state = ML_ACTIVE;
+					k_work_reschedule(&data->timer_work,
+							  K_MSEC(data->idle_timeout_ms));
+					LOG_DBG("mouse_layer: drag end → ACTIVE");
+				}
+				break;
+			default:
+				break;
+			}
 		}
+	} else if (ev->state) {
+		/*
+		 * Non-button keypress — track as typing activity.
+		 *
+		 * Only non-button positions update the typing timestamp.
+		 * This prevents a self-reinforcing lockout: if the mouse
+		 * layer is off and the user presses a button position
+		 * (producing a base-layer character like "a" instead of
+		 * a click), that character must NOT refresh the
+		 * require-prior-idle window — otherwise each failed click
+		 * attempt blocks reactivation for another 800 ms and the
+		 * user can never escape.
+		 */
+		data->last_typing_ts = ev->timestamp;
 	}
-
-	return ZMK_EV_EVENT_BUBBLE;
-}
-
-/* ── ZMK event: keycode (for require-prior-idle tracking) ─────────── */
-
-static int on_keycode(const zmk_event_t *eh)
-{
-	const struct zmk_keycode_state_changed *ev =
-		as_zmk_keycode_state_changed(eh);
-	if (!ev || !ev->state) {
-		return ZMK_EV_EVENT_BUBBLE;
-	}
-
-	const struct device *dev = DEVICE_DT_INST_GET(0);
-	struct ml_data *data = dev->data;
-	data->last_keycode_ts = ev->timestamp;
 
 	return ZMK_EV_EVENT_BUBBLE;
 }
@@ -283,9 +309,6 @@ static int ml_event_dispatcher(const zmk_event_t *eh)
 {
 	if (as_zmk_position_state_changed(eh)) {
 		return on_position_state(eh);
-	}
-	if (as_zmk_keycode_state_changed(eh)) {
-		return on_keycode(eh);
 	}
 	return ZMK_EV_EVENT_BUBBLE;
 }
@@ -310,7 +333,6 @@ static const struct zmk_input_processor_driver_api ml_api = {
 
 ZMK_LISTENER(processor_mouse_layer, ml_event_dispatcher);
 ZMK_SUBSCRIPTION(processor_mouse_layer, zmk_position_state_changed);
-ZMK_SUBSCRIPTION(processor_mouse_layer, zmk_keycode_state_changed);
 
 /* ── device instantiation ─────────────────────────────────────────── */
 
