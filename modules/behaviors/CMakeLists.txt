@@ -6,6 +6,10 @@ if(CONFIG_ZMK_INPUT_PROCESSOR_SMOOTH)
   target_sources(app PRIVATE src/input_processor_smooth.c)
 endif()
 
+if(CONFIG_ZMK_INPUT_PROCESSOR_SPIKE_FILTER)
+  target_sources(app PRIVATE src/input_processor_spike_filter.c)
+endif()
+
 if(CONFIG_ZMK_INPUT_PROCESSOR_RESPONSE_CURVE)
   target_sources(app PRIVATE src/input_processor_response_curve.c)
 endif()

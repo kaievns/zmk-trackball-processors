@@ -1,0 +1,15 @@
+# Acceleration-based spike filter
+#
+# param1 = sensitivity (1-10)
+#   1 = tolerant, 5 = moderate, 10 = aggressive
+#
+# Usage:
+#   input-processors = <&zip_spike_filter 5>;
+
+description: Filters stiction spikes by detecting sudden acceleration.
+
+compatible: "zmk,input-processor-spike-filter"
+
+include: ip_one_param.yaml
+
+properties: {}

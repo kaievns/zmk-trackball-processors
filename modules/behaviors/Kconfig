@@ -10,6 +10,13 @@ config ZMK_INPUT_PROCESSOR_SMOOTH
 	help
 	  Applies exponential moving average smoothing to pointer input.
 
+config ZMK_INPUT_PROCESSOR_SPIKE_FILTER
+	bool "Acceleration-based spike filter"
+	default y if DT_HAS_ZMK_INPUT_PROCESSOR_SPIKE_FILTER_ENABLED
+	help
+	  Filters stiction spikes by detecting sudden acceleration
+	  between consecutive samples.
+
 config ZMK_INPUT_PROCESSOR_RESPONSE_CURVE
 	bool "Response curve input processor"
 	default y if DT_HAS_ZMK_INPUT_PROCESSOR_RESPONSE_CURVE_ENABLED

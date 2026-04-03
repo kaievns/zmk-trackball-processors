@@ -1,0 +1,6 @@
+/ {
+    /omit-if-no-ref/ zip_spike_filter: zip_spike_filter {
+        compatible = "zmk,input-processor-spike-filter";
+        #input-processor-cells = <1>;
+    };
+};
