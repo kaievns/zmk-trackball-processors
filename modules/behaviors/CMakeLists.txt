@@ -1,11 +1,3 @@
-if(CONFIG_ZMK_INPUT_PROCESSOR_ACCEL)
-  target_sources(app PRIVATE src/input_processor_accel.c)
-endif()
-
-if(CONFIG_ZMK_INPUT_PROCESSOR_SMOOTH)
-  target_sources(app PRIVATE src/input_processor_smooth.c)
-endif()
-
 if(CONFIG_ZMK_INPUT_PROCESSOR_SPIKE_FILTER)
   target_sources(app PRIVATE src/input_processor_spike_filter.c)
 endif()

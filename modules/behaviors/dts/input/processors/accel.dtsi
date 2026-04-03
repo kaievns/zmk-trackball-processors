@@ -1,7 +1,0 @@
-/ {
-    /omit-if-no-ref/ zip_accel: zip_accel {
-        compatible = "zmk,input-processor-accel";
-        #input-processor-cells = <1>;
-        track-remainders;
-    };
-};

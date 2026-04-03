@@ -1,15 +1,3 @@
-config ZMK_INPUT_PROCESSOR_ACCEL
-	bool "Acceleration power curve input processor"
-	default y if DT_HAS_ZMK_INPUT_PROCESSOR_ACCEL_ENABLED
-	help
-	  Applies d^(exponent/100) power curve acceleration to pointer input.
-
-config ZMK_INPUT_PROCESSOR_SMOOTH
-	bool "EMA smoothing input processor"
-	default y if DT_HAS_ZMK_INPUT_PROCESSOR_SMOOTH_ENABLED
-	help
-	  Applies exponential moving average smoothing to pointer input.
-
 config ZMK_INPUT_PROCESSOR_SPIKE_FILTER
 	bool "Acceleration-based spike filter"
 	default y if DT_HAS_ZMK_INPUT_PROCESSOR_SPIKE_FILTER_ENABLED
