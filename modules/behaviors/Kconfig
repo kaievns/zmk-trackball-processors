@@ -10,6 +10,13 @@ config ZMK_INPUT_PROCESSOR_SMOOTH
 	help
 	  Applies exponential moving average smoothing to pointer input.
 
+config ZMK_INPUT_PROCESSOR_RESPONSE_CURVE
+	bool "Response curve input processor"
+	default y if DT_HAS_ZMK_INPUT_PROCESSOR_RESPONSE_CURVE_ENABLED
+	help
+	  Controller-style power curve that compresses small movements
+	  while preserving large ones.
+
 config ZMK_INPUT_PROCESSOR_MOUSE_LAYER
 	bool "Mouse layer input processor with click/drag/double-click awareness"
 	default y if DT_HAS_ZMK_INPUT_PROCESSOR_MOUSE_LAYER_ENABLED

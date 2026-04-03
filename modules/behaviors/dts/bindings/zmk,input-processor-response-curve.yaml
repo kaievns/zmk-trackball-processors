@@ -1,0 +1,15 @@
+# Response curve input processor — controller-style sensitivity curve
+#
+# param1 = curve intensity (0-10)
+#   0 = linear, 3 = mild, 5 = moderate, 10 = heavy
+#
+# Usage:
+#   input-processors = <&zip_response_curve 5>;
+
+description: Power-curve response mapping that compresses small movements.
+
+compatible: "zmk,input-processor-response-curve"
+
+include: ip_one_param.yaml
+
+properties: {}

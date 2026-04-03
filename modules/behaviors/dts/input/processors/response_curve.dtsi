@@ -1,0 +1,6 @@
+/ {
+    /omit-if-no-ref/ zip_response_curve: zip_response_curve {
+        compatible = "zmk,input-processor-response-curve";
+        #input-processor-cells = <1>;
+    };
+};
