@@ -1,22 +1,19 @@
 /*
- * Acceleration-based spike filter input processor
+ * Slew rate limiter input processor
  *
- * Detects stiction spikes by measuring acceleration (change in delta
- * between consecutive samples).  If the acceleration exceeds a
- * threshold, the sample is replaced with the previous delta.
+ * Limits how fast the delta can change between consecutive samples.
+ * If the change exceeds a proportional threshold, the output is
+ * clamped toward the target.  The threshold scales with the current
+ * output magnitude so fast movements get more headroom while slow
+ * movements stay tightly controlled.
  *
- * Zero latency on clean samples — values pass through untouched.
- * Only spike samples get replaced.
+ * threshold = base + abs(prev_output) * factor / 16
  *
  * param1 = sensitivity (1-10)
- *   1  = very tolerant (only catches extreme spikes)
+ *   1  = very tolerant
  *   5  = moderate
- *   10 = aggressive (catches smaller spikes, may clip fast flicks)
- *
- * Threshold = (11 - level) * 10, so:
- *   level 1 → threshold 100  (accel must exceed 100 to trigger)
- *   level 5 → threshold 60
- *   level 10 → threshold 10
+ *   9  = smooth
+ *   10 = very smooth
  */
 
 #define DT_DRV_COMPAT zmk_input_processor_spike_filter
@@ -28,8 +25,8 @@
 #include <stdlib.h>
 
 struct spike_data {
-	int16_t prev_x;
-	int16_t prev_y;
+	int16_t out_x;
+	int16_t out_y;
 	bool primed;
 };
 
@@ -44,11 +41,11 @@ static int spike_handle_event(const struct device *dev,
 		return 0;
 	}
 
-	int16_t *prev;
+	int16_t *out;
 	if (event->code == INPUT_REL_X) {
-		prev = &data->prev_x;
+		out = &data->out_x;
 	} else if (event->code == INPUT_REL_Y) {
-		prev = &data->prev_y;
+		out = &data->out_y;
 	} else {
 		return 0;
 	}
@@ -57,23 +54,24 @@ static int spike_handle_event(const struct device *dev,
 
 	if (!data->primed) {
 		data->primed = true;
-		*prev = val;
+		*out = val;
 		return 0;
 	}
 
 	uint8_t level = (uint8_t)CLAMP(param1, 1, 10);
-	int32_t threshold = (11 - level) * 10;
+	int32_t threshold = (11 - level) * 5;
 
-	int32_t accel = abs((int32_t)val - (int32_t)*prev);
+	int32_t diff = (int32_t)val - (int32_t)*out;
 
-	if (accel > threshold) {
-		event->value = *prev;
+	if (diff > threshold) {
+		*out += (int16_t)threshold;
+	} else if (diff < -threshold) {
+		*out -= (int16_t)threshold;
+	} else {
+		*out = val;
 	}
 
-	/* Always track raw input so comparisons are between
-	 * consecutive sensor readings, not filtered output */
-	*prev = val;
-
+	event->value = *out;
 	return 0;
 }
 
