@@ -89,13 +89,13 @@ static bool is_button_position(const struct ml_config *cfg, uint32_t position)
 
 static void activate_layer(struct ml_data *data)
 {
-	zmk_keymap_layer_activate(data->target_layer);
+	zmk_keymap_layer_activate(data->target_layer, false);
 	LOG_DBG("mouse_layer: layer %d ON", data->target_layer);
 }
 
 static void deactivate_layer(struct ml_data *data)
 {
-	zmk_keymap_layer_deactivate(data->target_layer);
+	zmk_keymap_layer_deactivate(data->target_layer, false);
 	data->state = ML_IDLE;
 	data->buttons_held = 0;
 	data->pending_deactivate = false;
