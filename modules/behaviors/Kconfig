@@ -4,13 +4,6 @@ config ZMK_INPUT_PROCESSOR_ACCEL
 	help
 	  Applies d^(exponent/100) power curve acceleration to pointer input.
 
-config ZMK_INPUT_PROCESSOR_DEFLICKER
-	bool "Deflicker input processor for trackball breakaway suppression"
-	default y if DT_HAS_ZMK_INPUT_PROCESSOR_DEFLICKER_ENABLED
-	help
-	  Dampens initial movement spikes after idle gaps to suppress
-	  the jerk caused by trackball static friction (stiction).
-
 config ZMK_INPUT_PROCESSOR_SMOOTH
 	bool "EMA smoothing input processor"
 	default y if DT_HAS_ZMK_INPUT_PROCESSOR_SMOOTH_ENABLED
