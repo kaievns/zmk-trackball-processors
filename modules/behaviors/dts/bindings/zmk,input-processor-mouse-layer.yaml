@@ -25,6 +25,26 @@ properties:
       movement can activate the layer. Prevents accidental activation
       while typing.
 
+  activation-threshold:
+    type: int
+    required: false
+    default: 0
+    description: >
+      Minimum cumulative movement (|dx| + |dy|) required before the
+      layer activates from IDLE. Small values filter out trackball
+      jitter during typing. The accumulator resets when the layer
+      activates, after the require-prior-idle window expires, or
+      after a short movement-idle timeout.
+
+  activation-window-ms:
+    type: int
+    required: false
+    default: 200
+    description: >
+      Maximum time window over which activation-threshold movement
+      must accumulate. If no movement arrives within this window,
+      the accumulator resets to zero.
+
   double-click-window-ms:
     type: int
     required: false

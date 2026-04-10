@@ -59,6 +59,8 @@ enum ml_state {
 struct ml_config {
 	int16_t require_prior_idle_ms;
 	int16_t double_click_window_ms;
+	uint16_t activation_threshold;
+	uint16_t activation_window_ms;
 	uint32_t active_layer_mask; /* 0 = any layer */
 	const uint16_t *button_positions;
 	size_t num_button_positions;
@@ -70,6 +72,8 @@ struct ml_data {
 	uint8_t target_layer;
 	uint32_t idle_timeout_ms;
 	int64_t last_typing_ts;
+	int64_t last_motion_ts;
+	uint32_t motion_accumulator;
 	uint8_t buttons_held;
 	bool pending_deactivate; /* deactivate on next full release */
 	struct k_work_delayable timer_work;
@@ -152,21 +156,41 @@ static int ml_handle_event(const struct device *dev, struct input_event *event,
 	data->idle_timeout_ms = param2;
 
 	switch (data->state) {
-	case ML_IDLE:
+	case ML_IDLE: {
 		if (cfg->active_layer_mask &&
 		    !(cfg->active_layer_mask & BIT(zmk_keymap_highest_layer_active()))) {
 			return 0;
 		}
+		int64_t now = k_uptime_get();
 		if (cfg->require_prior_idle_ms > 0) {
-			int64_t now = k_uptime_get();
 			if ((data->last_typing_ts + cfg->require_prior_idle_ms) > now) {
+				data->motion_accumulator = 0;
 				return 0;
 			}
 		}
+		/* Accumulate |dx|+|dy| over the activation window and only
+		 * activate once the threshold is crossed. Filters out tiny
+		 * trackball jitter during typing pauses. */
+		if (cfg->activation_threshold > 0) {
+			if ((now - data->last_motion_ts) > cfg->activation_window_ms) {
+				data->motion_accumulator = 0;
+			}
+			data->last_motion_ts = now;
+
+			int32_t v = event->value;
+			if (v < 0) v = -v;
+			data->motion_accumulator += (uint32_t)v;
+
+			if (data->motion_accumulator < cfg->activation_threshold) {
+				return 0;
+			}
+		}
+		data->motion_accumulator = 0;
 		activate_layer(data);
 		data->state = ML_ACTIVE;
 		k_work_reschedule(&data->timer_work, K_MSEC(data->idle_timeout_ms));
 		break;
+	}
 
 	case ML_ACTIVE:
 		/* Re-activate if layer was externally deactivated */
@@ -353,6 +377,10 @@ ZMK_SUBSCRIPTION(processor_mouse_layer, zmk_position_state_changed);
 			DT_INST_PROP_OR(n, require_prior_idle_ms, 0),       \
 		.double_click_window_ms =                                   \
 			DT_INST_PROP_OR(n, double_click_window_ms, 300),    \
+		.activation_threshold =                                     \
+			DT_INST_PROP_OR(n, activation_threshold, 0),        \
+		.activation_window_ms =                                     \
+			DT_INST_PROP_OR(n, activation_window_ms, 200),      \
 		.active_layer_mask = ML_ACTIVE_LAYER_MASK(n),               \
 		.button_positions = ml_button_positions_##n,                \
 		.num_button_positions =                                     \
