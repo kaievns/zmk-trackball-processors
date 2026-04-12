@@ -74,6 +74,7 @@ struct ml_data {
 	uint32_t idle_timeout_ms;
 	int64_t last_typing_ts;
 	int64_t last_motion_ts;
+	int64_t last_deactivation_ts;
 	uint32_t motion_accumulator;
 	uint8_t motion_event_count;
 	uint8_t buttons_held;
@@ -105,6 +106,7 @@ static void deactivate_layer(struct ml_data *data)
 	data->state = ML_IDLE;
 	data->buttons_held = 0;
 	data->pending_deactivate = false;
+	data->last_deactivation_ts = k_uptime_get();
 	LOG_DBG("mouse_layer: layer %d OFF", data->target_layer);
 }
 
@@ -190,8 +192,23 @@ static int ml_handle_event(const struct device *dev, struct input_event *event,
 			data->motion_accumulator += (uint32_t)v;
 			data->motion_event_count++;
 
-			if (data->motion_accumulator < cfg->activation_threshold ||
-			    data->motion_event_count < cfg->activation_event_min) {
+			/* "Warm" re-activation: if the layer was recently
+			 * deactivated (within 2s), the user is likely in a
+			 * click workflow (move-click-move-click). Skip the
+			 * event count check so small quick moves between
+			 * targets can re-activate immediately. The magnitude
+			 * threshold still applies.
+			 *
+			 * "Cold" activation: no recent deactivation — user
+			 * was typing or idle. Require both magnitude AND
+			 * event count to filter out chassis thuds from key
+			 * bottom-outs. */
+			bool warm = (now - data->last_deactivation_ts) < 2000;
+
+			if (data->motion_accumulator < cfg->activation_threshold) {
+				return 0;
+			}
+			if (!warm && data->motion_event_count < cfg->activation_event_min) {
 				return 0;
 			}
 		}
@@ -343,6 +360,19 @@ static int on_position_state(const zmk_event_t *eh)
 		 * user can never escape.
 		 */
 		data->last_typing_ts = ev->timestamp;
+
+		/* Instant typing exit: if a real key is pressed while the
+		 * mouse layer is still active (e.g. user clicked a text
+		 * input and immediately starts typing), kill the layer
+		 * now rather than waiting for the idle or DC timer. Also
+		 * clear the grace period so the full thud filter is armed
+		 * — typing vibration should not re-activate the layer. */
+		if (data->state == ML_ACTIVE || data->state == ML_CLICK_LINGER) {
+			k_work_cancel_delayable(&data->timer_work);
+			deactivate_layer(data);
+			data->last_deactivation_ts = 0;
+			LOG_DBG("mouse_layer: instant typing exit");
+		}
 	}
 
 	return ZMK_EV_EVENT_BUBBLE;
