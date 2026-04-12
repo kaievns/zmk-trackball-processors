@@ -45,6 +45,18 @@ properties:
       must accumulate. If no movement arrives within this window,
       the accumulator resets to zero.
 
+  activation-event-min:
+    type: int
+    required: false
+    default: 1
+    description: >
+      Minimum number of separate motion events required within the
+      activation window before the layer activates. Works together
+      with activation-threshold to discriminate chassis vibration
+      (high magnitude, 1-2 events) from deliberate trackball motion
+      (sustained events over 15-30ms). Set to 3 or higher for
+      embedded trackballs where key bottom-outs shake the sensor.
+
   double-click-window-ms:
     type: int
     required: false

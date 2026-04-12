@@ -27,7 +27,8 @@
 struct spike_data {
 	int16_t out_x;
 	int16_t out_y;
-	bool primed;
+	bool primed_x;
+	bool primed_y;
 };
 
 static int spike_handle_event(const struct device *dev,
@@ -42,18 +43,21 @@ static int spike_handle_event(const struct device *dev,
 	}
 
 	int16_t *out;
+	bool *primed;
 	if (event->code == INPUT_REL_X) {
 		out = &data->out_x;
+		primed = &data->primed_x;
 	} else if (event->code == INPUT_REL_Y) {
 		out = &data->out_y;
+		primed = &data->primed_y;
 	} else {
 		return 0;
 	}
 
 	int16_t val = (int16_t)event->value;
 
-	if (!data->primed) {
-		data->primed = true;
+	if (!*primed) {
+		*primed = true;
 		*out = val;
 		return 0;
 	}

@@ -61,6 +61,7 @@ struct ml_config {
 	int16_t double_click_window_ms;
 	uint16_t activation_threshold;
 	uint16_t activation_window_ms;
+	uint8_t activation_event_min;
 	uint32_t active_layer_mask; /* 0 = any layer */
 	const uint16_t *button_positions;
 	size_t num_button_positions;
@@ -74,6 +75,7 @@ struct ml_data {
 	int64_t last_typing_ts;
 	int64_t last_motion_ts;
 	uint32_t motion_accumulator;
+	uint8_t motion_event_count;
 	uint8_t buttons_held;
 	bool pending_deactivate; /* deactivate on next full release */
 	struct k_work_delayable timer_work;
@@ -168,24 +170,33 @@ static int ml_handle_event(const struct device *dev, struct input_event *event,
 				return 0;
 			}
 		}
-		/* Accumulate |dx|+|dy| over the activation window and only
-		 * activate once the threshold is crossed. Filters out tiny
-		 * trackball jitter during typing pauses. */
+		/* Accumulate |dx|+|dy| and event count over the activation
+		 * window. Require both magnitude AND event count minimums
+		 * before activating. This discriminates between:
+		 *  - chassis thuds: high magnitude, 1-2 events, <10ms
+		 *  - deliberate motion: sustained events over 15-30ms
+		 * A single large impulse from a key bottom-out can't
+		 * trip the event count check even if it exceeds the
+		 * magnitude threshold. */
 		if (cfg->activation_threshold > 0) {
 			if ((now - data->last_motion_ts) > cfg->activation_window_ms) {
 				data->motion_accumulator = 0;
+				data->motion_event_count = 0;
 			}
 			data->last_motion_ts = now;
 
 			int32_t v = event->value;
 			if (v < 0) v = -v;
 			data->motion_accumulator += (uint32_t)v;
+			data->motion_event_count++;
 
-			if (data->motion_accumulator < cfg->activation_threshold) {
+			if (data->motion_accumulator < cfg->activation_threshold ||
+			    data->motion_event_count < cfg->activation_event_min) {
 				return 0;
 			}
 		}
 		data->motion_accumulator = 0;
+		data->motion_event_count = 0;
 		activate_layer(data);
 		data->state = ML_ACTIVE;
 		k_work_reschedule(&data->timer_work, K_MSEC(data->idle_timeout_ms));
@@ -202,11 +213,21 @@ static int ml_handle_event(const struct device *dev, struct input_event *event,
 
 	case ML_BUTTON_DOWN:
 		data->state = ML_DRAGGING;
+		/* Start the safety timer fresh now that we know the user
+		 * is dragging — movement-aware timeout from here on. */
+		k_work_reschedule(&data->timer_work, K_MSEC(SAFETY_TIMEOUT_MS));
 		LOG_DBG("mouse_layer: → DRAGGING");
 		break;
 
 	case ML_DRAGGING:
-		/* stay dragging */
+		/* User is actively dragging — extend the safety timeout.
+		 * This way the 10s safety net only fires when motion has
+		 * been absent for 10s straight while a button is held,
+		 * which is a much better heuristic for a missed BLE
+		 * release packet than a blind hard cap. Real drags of
+		 * any length are supported as long as the user keeps
+		 * moving. */
+		k_work_reschedule(&data->timer_work, K_MSEC(SAFETY_TIMEOUT_MS));
 		break;
 
 	case ML_CLICK_LINGER:
@@ -381,6 +402,8 @@ ZMK_SUBSCRIPTION(processor_mouse_layer, zmk_position_state_changed);
 			DT_INST_PROP_OR(n, activation_threshold, 0),        \
 		.activation_window_ms =                                     \
 			DT_INST_PROP_OR(n, activation_window_ms, 200),      \
+		.activation_event_min =                                     \
+			DT_INST_PROP_OR(n, activation_event_min, 1),        \
 		.active_layer_mask = ML_ACTIVE_LAYER_MASK(n),               \
 		.button_positions = ml_button_positions_##n,                \
 		.num_button_positions =                                     \
