@@ -77,6 +77,7 @@ struct ml_data {
 	int64_t last_deactivation_ts;
 	uint32_t motion_accumulator;
 	uint8_t motion_event_count;
+	uint8_t recent_key_count; /* keypresses within typing detection window */
 	uint8_t buttons_held;
 	bool pending_deactivate; /* deactivate on next full release */
 	struct k_work_delayable timer_work;
@@ -358,8 +359,25 @@ static int on_position_state(const zmk_event_t *eh)
 		 * require-prior-idle window — otherwise each failed click
 		 * attempt blocks reactivation for another 800 ms and the
 		 * user can never escape.
+		 *
+		 * Typing detection: a single isolated keypress (hotkey,
+		 * tool change) should NOT arm the lockout — only rapid
+		 * sequential keypresses (actual typing) should. Count
+		 * keypresses within a 500ms window; only arm the lockout
+		 * once we see 2+ keys in that window.
 		 */
-		data->last_typing_ts = ev->timestamp;
+		int64_t now = ev->timestamp;
+		if ((now - data->last_typing_ts) < 500) {
+			data->recent_key_count++;
+		} else {
+			data->recent_key_count = 1;
+		}
+
+		/* Only arm the typing lockout if we detect actual typing
+		 * (2+ keys in rapid succession), not a single hotkey. */
+		if (data->recent_key_count >= 2) {
+			data->last_typing_ts = now;
+		}
 
 		/* Instant typing exit: if a real key is pressed while the
 		 * mouse layer is still active (e.g. user clicked a text
