@@ -164,12 +164,14 @@ static int ml_handle_event(const struct device *dev, struct input_event *event,
 	case ML_IDLE: {
 		if (cfg->active_layer_mask &&
 		    !(cfg->active_layer_mask & BIT(zmk_keymap_highest_layer_active()))) {
+			event->value = 0;
 			return 0;
 		}
 		int64_t now = k_uptime_get();
 		if (cfg->require_prior_idle_ms > 0) {
 			if ((data->last_typing_ts + cfg->require_prior_idle_ms) > now) {
 				data->motion_accumulator = 0;
+				event->value = 0;
 				return 0;
 			}
 		}
@@ -207,9 +209,11 @@ static int ml_handle_event(const struct device *dev, struct input_event *event,
 			bool warm = (now - data->last_deactivation_ts) < 2000;
 
 			if (data->motion_accumulator < cfg->activation_threshold) {
+				event->value = 0;
 				return 0;
 			}
 			if (!warm && data->motion_event_count < cfg->activation_event_min) {
+				event->value = 0;
 				return 0;
 			}
 		}
