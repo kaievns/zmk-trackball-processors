@@ -1,148 +1,137 @@
-# Trackball Profiles Module
+# ZMK Trackball Input Processors
 
-Layer-based trackball DPI and acceleration profile switching for ZMK.
+ZMK input processors for trackball-equipped keyboards. Designed for embedded
+trackballs on wireless split keyboards where typing vibration, sensor jitter,
+and automatic mouse layer management need careful handling.
 
-Profiles are defined in the keymap devicetree and automatically activated when
-the highest active ZMK layer changes. No key bindings required — the right
-profile is always applied for the current layer.
+## Processors
 
-## How it works
+### Spike Filter (`zmk,input-processor-spike-filter`)
 
-1. You define profiles in your keymap, each listing the layers it applies to
-2. When you switch layers (via `&mo`, `&tog`, `&to`, or auto-activated temp
-   layers), the module detects the change
-3. The matching profile's DPI and acceleration curve are applied to the
-   PMW3610 sensor in real time
-4. If no profile matches the current layer, the first profile is used as
-   fallback
+Slew rate limiter that clamps how fast deltas can change between consecutive
+samples. Catches stiction spikes from the sensor without adding latency to
+sustained motion. Per-axis initialisation ensures the first movement on each
+axis is always instant.
 
-## Acceleration curves
+```
+threshold = (11 - level) * 5
+```
 
-The `acceleration-exponent` property selects from pre-computed lookup tables:
-
-| Value   | Curve  | Feel                     |
-|---------|--------|--------------------------|
-| `0`     | Linear | Raw multiplier only      |
-| `1-40`  | d^1.3  | Gentle, precise tracking |
-| `41-65` | d^1.5  | Moderate acceleration    |
-| `66-100`| d^2.0  | Strong, fast flicks      |
-
-Below the `acceleration-threshold` (sensor counts per sample), no curve is
-applied — only the base `acceleration-multiplier`. Above it, the selected
-power curve kicks in.
-
-## Usage
-
-### 1. Define profiles in your keymap
+**param1** = sensitivity level (1-10). Lower = more tolerant, higher = smoother.
 
 ```dts
-#define DEFAULT 0
-#define LOWER   1
-#define RAISE   2
-#define MOUSE   3
-#define SCROLL  4
-#define GAMEPAD 5
-
-/ {
-    trackball_profiles {
-        compatible = "zmk,trackball-profiles";
-
-        /* Default profile — used on most layers */
-        profile_default {
-            layers = <DEFAULT LOWER RAISE MOUSE>;
-            dpi = <800>;
-            acceleration-multiplier = <100>;  /* 1.0x */
-            acceleration-threshold = <5>;
-            acceleration-exponent = <50>;     /* d^1.5 curve */
-        };
-
-        /* Scroll layer — slow and linear for smooth scrolling */
-        profile_scroll {
-            layers = <SCROLL>;
-            dpi = <400>;
-            acceleration-multiplier = <60>;   /* 0.6x */
-            acceleration-threshold = <8>;
-            acceleration-exponent = <0>;      /* linear */
-        };
-
-        /* Gaming — high DPI with strong acceleration */
-        profile_gaming {
-            layers = <GAMEPAD>;
-            dpi = <1600>;
-            acceleration-multiplier = <150>;  /* 1.5x */
-            acceleration-threshold = <3>;
-            acceleration-exponent = <80>;     /* d^2.0 curve */
-        };
-    };
-};
+input-processors = <&zip_spike_filter 5>;
 ```
 
-### 2. Enable in your .conf
+### Response Curve (`zmk,input-processor-response-curve`)
 
-The module auto-enables when `CONFIG_PMW3610=y` and `CONFIG_ZMK_MOUSE=y` are
-set. To explicitly control it:
-
-```ini
-CONFIG_ZMK_TRACKBALL_PROFILES=y
-```
-
-### 3. Layer switching activates profiles
+Controller-style power curve that compresses small movements while preserving
+large ones. Uses a pre-computed 256-entry LUT per level with lazy
+initialisation, so layer switches are a pointer swap.
 
 ```
-Layer 0 (QWERTY) active  →  profile_default  (800 CPI, d^1.5)
-Layer 5 (GAMEPAD) active  →  profile_gaming   (1600 CPI, d^2.0)
-Layer 4 (SCROLL) active   →  profile_scroll   (400 CPI, linear)
+output = 256 * (input / 256) ^ gamma
 ```
 
-The highest active layer determines the profile. A layer can appear in only
-one profile's `layers` list. If the same layer appears in multiple profiles,
-the first match wins.
+**param1** = curve intensity (0-10). 0 = linear passthrough, 10 = heavy
+compression of small movements.
 
-### 4. Combine with input processors
+```dts
+input-processors = <&zip_response_curve 6>;
+```
 
-This module works alongside ZMK's input processor system. A typical setup uses
-`temp_layer` to auto-activate a MOUSE layer on trackball movement, and
-per-layer input processors for scroll conversion:
+### Mouse Layer (`zmk,input-processor-mouse-layer`)
+
+Temporarily activates a configurable layer when the trackball moves, with smart
+click/drag/double-click lifecycle management. Handles the full complexity of
+embedded trackball UX:
+
+- **Typing lockout**: ignores motion during and shortly after typing
+- **Thud filtering**: requires sustained motion (multiple events) to activate,
+  rejecting single-event chassis vibrations from key bottom-outs
+- **Warm re-activation**: recently deactivated layer re-activates with relaxed
+  thresholds for fluid move-click-move-click workflows
+- **Instant typing exit**: layer drops immediately when a real key is pressed
+- **Held key bypass**: holding a modifier/layer key while moving the trackball
+  bypasses the typing lockout (for Alt+Tab, Ctrl+click, etc.)
+- **Event suppression**: zeroes motion events during typing lockout to prevent
+  cursor drift and save BLE bandwidth
+- **Double-click support**: layer lingers briefly after a click to allow
+  double-clicks, then deactivates
+- **Drag support**: layer stays active during drag operations with a
+  movement-aware safety timeout for missed BLE release packets
+
+**param1** = target layer, **param2** = idle timeout (ms)
+
+```dts
+input-processors = <&zip_mouse_layer MOUSE 1200>;
+```
+
+#### Properties
+
+| Property                 | Default | Description                                             |
+| ------------------------ | ------- | ------------------------------------------------------- |
+| `require-prior-idle-ms`  | 0       | Minimum ms since last typing burst before activation    |
+| `activation-threshold`   | 0       | Minimum cumulative `\|dx\|+\|dy\|` to activate          |
+| `activation-window-ms`   | 200     | Time window for threshold accumulation                  |
+| `activation-event-min`   | 1       | Minimum separate motion events within window            |
+| `double-click-window-ms` | 300     | Linger time after click for double-click                |
+| `active-layers`          | []      | Layer indices where activation is allowed (empty = any) |
+| `button-positions`       | []      | Key positions treated as mouse buttons                  |
+
+#### Example configuration
 
 ```dts
 / {
-    temp_layer: temp_layer {
-        compatible = "zmk,input-processor-temp-layer";
-        #input-processor-cells = <2>;
-        require-prior-idle-ms = <800>;
-        excluded-positions = <3 4 5 13 14 15>;
+    zip_mouse_layer {
+        require-prior-idle-ms = <1200>;
+        activation-threshold = <10>;
+        activation-window-ms = <200>;
+        activation-event-min = <3>;
+        double-click-window-ms = <300>;
+        active-layers = <0 1>;  /* HALMAK QWERTY */
+        button-positions = <7 16 18>;
     };
 
     trackball_listener {
         compatible = "zmk,input-listener";
-        device = <&trackball>;
-        input-processors = <&temp_layer 3 1200>;  /* MOUSE layer, 1200ms timeout */
+        device = <&split_input>;
+        input-processors =
+            <&zip_spike_filter 5>,
+            <&zip_response_curve 6>,
+            <&zip_xy_scaler 2 3>,
+            <&zip_mouse_layer MOUSE 1200>;
 
         scroll {
-            layers = <4>;  /* SCROLL layer */
-            input-processors = <&zip_xy_scaler 1 25>,
-                               <&zip_xy_to_scroll_mapper>,
-                               <&zip_scroll_transform INPUT_TRANSFORM_Y_INVERT>;
+            layers = <SCROLL>;
+            input-processors =
+                <&zip_spike_filter 6>,
+                <&zip_xy_scaler 1 80>,
+                <&zip_xy_to_scroll_mapper>,
+                <&zip_scroll_transform INPUT_TRANSFORM_Y_INVERT>;
         };
     };
 };
 ```
 
-## Building
+## Usage
 
-The module is loaded via `ZMK_EXTRA_MODULES` in the build command:
+Add this repo as a git submodule and reference it in your build:
 
-```bash
-west build -s zmk/app -b nice_nano_v2 \
-  -DSHIELD=5deg_right \
-  -DZMK_CONFIG=/path/to/config \
-  -DZMK_EXTRA_MODULES="/path/to/modules/drivers;/path/to/modules/behaviors"
+```makefile
+EXTRA_MODULES := /path/to/zmk-trackball-processors
 ```
 
-## Dependencies
+### Kconfig
 
-- PMW3610 driver module (provides `pmw3610_set_cpi` and
-  `pmw3610_set_acceleration` APIs)
-- ZMK with pointing/mouse support (`CONFIG_ZMK_MOUSE=y`)
-- ZMK fork with input processors for scroll/temp-layer features
-  (`petejohanson/zmk`, branch `feat/pointers-with-input-processors`)
+```
+CONFIG_ZMK_INPUT_PROCESSOR_SPIKE_FILTER=y
+CONFIG_ZMK_INPUT_PROCESSOR_RESPONSE_CURVE=y
+CONFIG_ZMK_INPUT_PROCESSOR_MOUSE_LAYER=y
+```
+
+## Copyright & License
+
+Everything is released under the terms of the MIT license
+
+(C) 2026 Kai Evans
