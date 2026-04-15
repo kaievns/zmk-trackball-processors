@@ -12,11 +12,3 @@ config ZMK_INPUT_PROCESSOR_RESPONSE_CURVE
 	  Controller-style power curve that compresses small movements
 	  while preserving large ones.
 
-config ZMK_INPUT_PROCESSOR_MOUSE_LAYER
-	bool "Mouse layer input processor with click/drag/double-click awareness"
-	default y if DT_HAS_ZMK_INPUT_PROCESSOR_MOUSE_LAYER_ENABLED
-	depends on !ZMK_SPLIT || ZMK_SPLIT_ROLE_CENTRAL
-	help
-	  Temporarily activates a mouse layer on trackball movement.
-	  Handles drag hold, double-click linger, and idle timeout.
-

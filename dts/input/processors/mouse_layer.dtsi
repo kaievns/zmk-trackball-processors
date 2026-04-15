@@ -1,6 +1,0 @@
-/ {
-    /omit-if-no-ref/ zip_mouse_layer: zip_mouse_layer {
-        compatible = "zmk,input-processor-mouse-layer";
-        #input-processor-cells = <2>;
-    };
-};
