@@ -78,6 +78,7 @@ struct ml_data {
 	uint32_t motion_accumulator;
 	uint8_t motion_event_count;
 	uint8_t recent_key_count; /* keypresses within typing detection window */
+	uint8_t keys_held;        /* non-button keys currently held */
 	uint8_t buttons_held;
 	bool pending_deactivate; /* deactivate on next full release */
 	struct k_work_delayable timer_work;
@@ -164,11 +165,14 @@ static int ml_handle_event(const struct device *dev, struct input_event *event,
 	case ML_IDLE: {
 		if (cfg->active_layer_mask &&
 		    !(cfg->active_layer_mask & BIT(zmk_keymap_highest_layer_active()))) {
-			event->value = 0;
+			/* Don't activate the mouse layer, but let cursor
+			 * move normally — other layers (ALTAB, GAMPAD, etc)
+			 * may need raw cursor movement without the mouse
+			 * layer's click bindings. */
 			return 0;
 		}
 		int64_t now = k_uptime_get();
-		if (cfg->require_prior_idle_ms > 0) {
+		if (cfg->require_prior_idle_ms > 0 && data->keys_held == 0) {
 			if ((data->last_typing_ts + cfg->require_prior_idle_ms) > now) {
 				data->motion_accumulator = 0;
 				event->value = 0;
@@ -351,49 +355,59 @@ static int on_position_state(const zmk_event_t *eh)
 				break;
 			}
 		}
-	} else if (ev->state) {
+	} else {
 		/*
-		 * Non-button keypress — track as typing activity.
-		 *
-		 * Only non-button positions update the typing timestamp.
-		 * This prevents a self-reinforcing lockout: if the mouse
-		 * layer is off and the user presses a button position
-		 * (producing a base-layer character like "a" instead of
-		 * a click), that character must NOT refresh the
-		 * require-prior-idle window — otherwise each failed click
-		 * attempt blocks reactivation for another 800 ms and the
-		 * user can never escape.
-		 *
-		 * Typing detection: a single isolated keypress (hotkey,
-		 * tool change) should NOT arm the lockout — only rapid
-		 * sequential keypresses (actual typing) should. Count
-		 * keypresses within a 500ms window; only arm the lockout
-		 * once we see 2+ keys in that window.
+		 * Non-button key event — track press/release for typing
+		 * detection and held-key awareness.
 		 */
-		int64_t now = ev->timestamp;
-		if ((now - data->last_typing_ts) < 500) {
-			data->recent_key_count++;
+		if (ev->state) {
+			data->keys_held++;
+
+			/*
+			 * Typing detection: a single isolated keypress (hotkey,
+			 * tool change) should NOT arm the lockout — only rapid
+			 * sequential keypresses (actual typing) should. Count
+			 * keypresses within a 500ms window; only arm the lockout
+			 * once we see 2+ keys in that window.
+			 *
+			 * Only non-button positions update the typing timestamp.
+			 * This prevents a self-reinforcing lockout: if the mouse
+			 * layer is off and the user presses a button position
+			 * (producing a base-layer character like "a" instead of
+			 * a click), that character must NOT refresh the
+			 * require-prior-idle window — otherwise each failed click
+			 * attempt blocks reactivation for another 800 ms and the
+			 * user can never escape.
+			 */
+			int64_t now = ev->timestamp;
+			if ((now - data->last_typing_ts) < 500) {
+				data->recent_key_count++;
+			} else {
+				data->recent_key_count = 1;
+			}
+
+			if (data->recent_key_count >= 2) {
+				data->last_typing_ts = now;
+			}
+
+			/* Instant typing exit: if a real key is pressed while
+			 * the mouse layer is still active (e.g. user clicked a
+			 * text input and immediately starts typing), kill the
+			 * layer now rather than waiting for the idle or DC
+			 * timer. Clear the grace period so the full thud
+			 * filter is armed — typing vibration should not
+			 * re-activate the layer. */
+			if (data->state == ML_ACTIVE || data->state == ML_CLICK_LINGER) {
+				k_work_cancel_delayable(&data->timer_work);
+				deactivate_layer(data);
+				data->last_deactivation_ts = 0;
+				LOG_DBG("mouse_layer: instant typing exit");
+			}
 		} else {
-			data->recent_key_count = 1;
-		}
-
-		/* Only arm the typing lockout if we detect actual typing
-		 * (2+ keys in rapid succession), not a single hotkey. */
-		if (data->recent_key_count >= 2) {
-			data->last_typing_ts = now;
-		}
-
-		/* Instant typing exit: if a real key is pressed while the
-		 * mouse layer is still active (e.g. user clicked a text
-		 * input and immediately starts typing), kill the layer
-		 * now rather than waiting for the idle or DC timer. Also
-		 * clear the grace period so the full thud filter is armed
-		 * — typing vibration should not re-activate the layer. */
-		if (data->state == ML_ACTIVE || data->state == ML_CLICK_LINGER) {
-			k_work_cancel_delayable(&data->timer_work);
-			deactivate_layer(data);
-			data->last_deactivation_ts = 0;
-			LOG_DBG("mouse_layer: instant typing exit");
+			/* key release */
+			if (data->keys_held > 0) {
+				data->keys_held--;
+			}
 		}
 	}
 
