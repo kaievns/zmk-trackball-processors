@@ -1,24 +1,29 @@
 /*
  * Response curve input processor — controller-style sensitivity curve
  *
- * Maps input deltas through a power curve that compresses small
- * movements while preserving large ones.  Like a game controller
- * response curve: low values get reduced, high values pass through
- * closer to their original magnitude.
+ * Maps input deltas through a power curve that compresses small movements
+ * while preserving large ones.  Like a game-controller response curve: low
+ * values get reduced for fine control, high values pass through close to
+ * their original magnitude.
  *
- * The curve is:  output = 256 * (input / 256) ^ gamma
+ * The curve is:  output = 256 * (input / 256) ^ gamma   for input in 1..256
+ * Above 256 the curve is linear pass-through (a fast flick must never lose
+ * distance — the old hard clamp to 256 truncated quick movements).
  *
- * Both endpoints are anchored: 0→0, 256→256.  Values above 256
- * are capped.  Sign is preserved.
+ * Endpoints are anchored: 0->0, 256->256.  Sign is preserved.
  *
  * param1 = curve intensity (0-10)
- *   0  = linear (passthrough)
+ *   0  = linear (pass-through)
  *   3  = mild compression
  *   5  = moderate
  *   10 = heavy (small moves strongly reduced)
  *
- * A full 256-entry LUT is pre-calculated per level on first use
- * and cached, so layer switches are a pointer swap.
+ * The LUTs for every level are precomputed once at device init (the target is
+ * a Cortex-M4F with a hardware FPU, so powf is cheap and one-time).  Building
+ * lazily on the input thread caused a first-move stutter, and the previous
+ * hand-rolled log2/exp2 minimax approximation was numerically invalid — it did
+ * not satisfy log2(1)=0 / log2(2)=1, producing non-monotonic per-octave cliffs
+ * in the LUT.  Using powf directly is both correct and (at init) free.
  */
 
 #define DT_DRV_COMPAT zmk_input_processor_response_curve
@@ -28,7 +33,7 @@
 #include <zephyr/input/input.h>
 #include <drivers/input_processor.h>
 
-#include <stdlib.h>
+#include <math.h>
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
@@ -37,8 +42,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define MAX_DELTA 256
 
 /* Gamma per level: higher gamma = more compression of small values.
- * Stored as gamma * 100 to avoid float in the table. */
-static const uint16_t level_gamma_x100[] = {
+ * Stored as gamma * 100 to keep the table integer. */
+static const uint16_t level_gamma_x100[NUM_LEVELS] = {
 	100,  /* 0: linear */
 	104,  /* 1 */
 	108,  /* 2 */
@@ -53,63 +58,28 @@ static const uint16_t level_gamma_x100[] = {
 };
 
 struct rc_data {
-	uint8_t lut[NUM_LEVELS][LUT_SIZE];  /* [level][1..256] → 0..255 maps to 0..256 */
-	bool cached[NUM_LEVELS];
+	/* lut[level][d] = curved output for input magnitude (d+1), range 0..256. */
+	uint16_t lut[NUM_LEVELS][LUT_SIZE];
 };
 
-/* Attempt float pow replacement with integer-friendly approximation.
- * Compute 256 * (d/256)^gamma for d in 1..256, gamma as float. */
-static void build_lut(uint8_t *lut, float gamma)
+static void build_lut(uint16_t *lut, float gamma)
 {
 	for (int d = 0; d < LUT_SIZE; d++) {
 		float norm = (float)(d + 1) / MAX_DELTA;   /* 1/256 .. 256/256 */
-
-		/* Compute norm^gamma via exp(gamma * ln(norm)).
-		 * Use a rough log2 + pow2 approach. */
-		float m = norm;
-		int n = 0;
-		while (m < 1.0f) { m *= 2.0f; n--; }
-		while (m >= 2.0f) { m *= 0.5f; n++; }
-
-		/* log2(m) for m in [1,2): minimax polynomial */
-		float log2_m = -1.7417939f + m * (2.8212026f +
-				m * (-1.4699568f + m * 0.44717955f));
-		float log2_val = n + log2_m;
-
-		float y = gamma * log2_val;
-
-		/* 2^y via integer + fractional split */
-		int yi = (int)y;
-		float yf = y - yi;
-		if (yf < 0) { yf += 1.0f; yi--; }
-
-		float result = 1.0f;
-		if (yi >= 0) {
-			for (int i = 0; i < yi; i++) result *= 2.0f;
-		} else {
-			for (int i = 0; i < -yi; i++) result *= 0.5f;
-		}
-		result *= 1.0f + yf * (0.6931472f +
-			  yf * (0.2402265f + yf * 0.0558011f));
-
-		float out = MAX_DELTA * result;
+		float out = MAX_DELTA * powf(norm, gamma);
 		int val = (int)(out + 0.5f);
-		lut[d] = (uint8_t)CLAMP(val, 0, 255);
+		lut[d] = (uint16_t)CLAMP(val, 0, MAX_DELTA);
 	}
-
-	/* Anchor: index 255 (input 256) always maps to 256 → store 255
-	 * (we add 1 during lookup to recover the full 1..256 range) */
 }
 
-static void ensure_lut(struct rc_data *data, uint8_t level)
+static int rc_init(const struct device *dev)
 {
-	if (data->cached[level]) {
-		return;
+	struct rc_data *data = dev->data;
+
+	for (int level = 0; level < NUM_LEVELS; level++) {
+		build_lut(data->lut[level], level_gamma_x100[level] / 100.0f);
 	}
-	float gamma = level_gamma_x100[level] / 100.0f;
-	build_lut(data->lut[level], gamma);
-	data->cached[level] = true;
-	LOG_INF("Response curve: built LUT for level %u (gamma=%.2f)", level, (double)gamma);
+	return 0;
 }
 
 static int rc_handle_event(const struct device *dev,
@@ -131,22 +101,19 @@ static int rc_handle_event(const struct device *dev,
 		return 0;
 	}
 
-	ensure_lut(data, level);
-
 	int32_t val = event->value;
 	int sign = (val >= 0) ? 1 : -1;
-	int32_t abs_val = abs(val);
+	int32_t abs_val = (val < 0) ? -val : val;
 
-	if (abs_val > MAX_DELTA) {
-		abs_val = MAX_DELTA;
-	}
-
-	/* LUT index: abs_val 1..256 → index 0..255.  abs_val 0 stays 0. */
 	int32_t out;
 	if (abs_val == 0) {
 		out = 0;
+	} else if (abs_val > MAX_DELTA) {
+		/* Fast flick: linear pass-through above the curve range so no
+		 * distance is lost. */
+		out = abs_val;
 	} else {
-		out = (int32_t)data->lut[level][abs_val - 1] + 1;
+		out = data->lut[level][abs_val - 1];
 	}
 
 	event->value = sign * out;
@@ -159,7 +126,7 @@ static struct zmk_input_processor_driver_api rc_api = {
 
 #define RC_INST(n)                                                     \
 	static struct rc_data rc_data_##n;                             \
-	DEVICE_DT_INST_DEFINE(n, NULL, NULL,                           \
+	DEVICE_DT_INST_DEFINE(n, rc_init, NULL,                        \
 			      &rc_data_##n, NULL,                      \
 			      POST_KERNEL,                             \
 			      CONFIG_KERNEL_INIT_PRIORITY_DEFAULT,     \
